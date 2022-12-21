@@ -33,8 +33,6 @@ uint8_t xpressNetId = 0;
 uint8_t xpressNetPower = csNormal;
 byte offset = 0;
 #define XNetSRPin 9       //Max485 Busdriver Send/Receive-PIN
-#define SwitchAdr 10      //Adresse der Beispielweiche
-#define SwitchAdr2 11
 #define keyExpanderAddr 0xA0  // I2C Adresse Keyboard
 #define ledExpanderAddr 0xA1
 #define interruptPinKeyboard 2
@@ -118,10 +116,10 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
       if (key.weichenlage != GERADE) {
         lcdSwitchInfo(key.swType, key.adresse);
         if (key.swType == WEICHE) {
-          lcd.print(" Gerade       |");
+          lcd.print(F(" Gerade       |"));
           switchLed(key.ledadresse, key.ledadresse2, true);
         } else {
-          lcd.print(" an");
+          lcd.print(F(" an"));
           switchLed(key.ledadresse, 255, true);
         }
         tastenkonfiguration[num].weichenlage = GERADE;
@@ -132,10 +130,10 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
       if (key.weichenlage != ABZWEIG) {
         lcdSwitchInfo(key.swType, key.adresse);
         if (key.swType == WEICHE) {
-          lcd.print(" Abzweig      /");
+          lcd.print(F(" Abzweig      /"));
           switchLed(key.ledadresse, key.ledadresse2, false);
         } else {
-          lcd.print(" aus");
+          lcd.print(F(" aus"));
           switchLed(key.ledadresse, 255, false);
         }
         tastenkonfiguration[num].weichenlage = ABZWEIG;
@@ -211,7 +209,7 @@ void notifyXNetPower (uint8_t State) {
 void scanI2C() {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Scanning...");
+  lcd.print(F("Scanning..."));
   int x = 0;
   for (x = 0; x <= 256; x++) {
     Wire.beginTransmission(x);
@@ -222,7 +220,7 @@ void scanI2C() {
     }
   }
   lcd.setCursor(0, 0);
-  lcd.print("Scan finished.");
+  lcd.print(F("Scan finished."));
 }
 
 void keyPress() {
@@ -261,21 +259,21 @@ bool parseLine(char* str) {
   // Set strtok start of line.
   str = strtok(str, "=");
   if (!str) return false;
-
+  char gleich[] = "=";
   if (strstr(str, "anlage") != NULL) {
-    strcpy(anlage, strtok(NULL, "="));
+    strcpy(anlage, strtok(NULL, gleich));
   }
   if (strstr(str, "adresse") != NULL) {
-    xpressnetAdresse = atoi(strtok(NULL, "="));
+    xpressnetAdresse = atoi(strtok(NULL, gleich));
   }
   if (strstr(str, "offset") != NULL) {
-    offset = atoi(strtok(NULL, "="));
+    offset = atoi(strtok(NULL, gleich));
   }
   if (strstr(str, "schaltzeit") != NULL) {
-    weichenschaltzeit = atoi(strtok(NULL, "="));
+    weichenschaltzeit = atoi(strtok(NULL, gleich));
   }
   if (strstr(str, "verzoegerung") != NULL) {
-    weichenverzoegerung = atoi(strtok(NULL, "="));
+    weichenverzoegerung = atoi(strtok(NULL, gleich));
   }
   if (str[0] == 'T') {
     // Taste
@@ -304,14 +302,14 @@ bool parseLine(char* str) {
   } else if (str[0] == 'L') {
     // LED
     byte led = atoi(str+1);
-    char* xswitch = strtok(NULL, "=");
+    char* xswitch = strtok(NULL, gleich);
     byte adr = 255;
     bool led2Adr = false;
     if (xswitch[0] == '-') {
-       adr = atoi(xswitch+1);
-       led2Adr = true;
+      adr = atoi(xswitch+1);
+      led2Adr = true;
     } else if(xswitch[0] == 'V') {
-       voltageLed = led-1;
+      voltageLed = led-1;
     } else if(xswitch[0] == 'S') {
       statusLed = led-1;
     } else {
@@ -330,7 +328,7 @@ bool parseLine(char* str) {
     }
   } else if (str[0] == 'D') {
     byte num = atoi(str + 1);
-    if (strtok(NULL, "=")[0] == 'G') {
+    if (strtok(NULL, gleich)[0] == 'G') {
       tastenkonfiguration[num - 1].weichenlage = GERADE;
     } else {
       tastenkonfiguration[num - 1].weichenlage = ABZWEIG;
@@ -390,20 +388,20 @@ void showInfo() {
   lcdprint(3, 0, anlage);
   lcdprint(3, 1, user);
   if (xpressNetVersion == 0) {
-    lcdprint(0, 2, "nicht verbunden!");
+    lcdprint(0, 2, F("nicht verbunden!"));
   } else {
-    lcdprint(0, 2, "XPressNet  V.");
+    lcdprint(0, 2, F("XPressNet  V."));
     lcd.print(xpressNetVersion, DEC);
-    lcd.print(".");
+    lcd.print(F("."));
     lcd.print(xpressNetId, DEC);
-    lcdprint(0, 3, "Status:    ");
+    lcdprint(0, 3, F("Status:    "));
     switch (xpressNetPower) {
-      case csNormal: lcd.print("Gleis an"); break;
-      case csTrackVoltageOff: lcd.print("Gleis aus"); break;
-      case csEmergencyStop: lcd.print("STOP"); break;
-      case csShortCircuit: lcd.print("KURZSCHLUSS"); break;
-      case csServiceMode: lcd.print("Prog."); break;
-      default: lcd.print("nicht verbunden");
+      case csNormal: lcd.print(F("Gleis an")); break;
+      case csTrackVoltageOff: lcd.print(F("Gleis aus")); break;
+      case csEmergencyStop: lcd.print(F("STOP")); break;
+      case csShortCircuit: lcd.print(F("KURZSCHLUSS")); break;
+      case csServiceMode: lcd.print(F("Prog.")); break;
+      default: lcd.print(F("nicht verbunden"));
     }
   }
 }
@@ -422,18 +420,16 @@ void setup() {
   lcd.createChar((uint8_t) 5, switch_icon);
   lcd.createChar((uint8_t) 6, lock_icon);
   lcd.createChar((uint8_t) 7, unlock_icon);
-  //lcd.createChar(10, switch_0_1);
-  //lcd.createChar(11, switch_1_1);
   lcd.backlight();
   setupConfig();
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Willkommen bei der");
+  lcd.print(F("Willkommen bei der"));
   lcd.setCursor(0, 1);
   lcd.print(anlage);
   if (!ledExpander.begin()) {
     lcd.setCursor(0, 3);
-    lcd.print("LED board error!");
+    lcd.print(F("LED board error!"));
     while(1);
   }
   for (uint8_t i = 0; i < 16; i++) {
@@ -444,7 +440,7 @@ void setup() {
   delay(3000);
   if (!keyExpander.begin()) {
     lcd.setCursor(0, 3);
-    lcd.print("Keypad error!");
+    lcd.print(F("Keypad error!"));
     while(1);
   }
   for (uint8_t i = 0; i < 16; i++) {
@@ -455,7 +451,6 @@ void setup() {
     ledExpander.digitalWrite(i, LOW);
   }
   initAnlage();
-  //scanI2C();
   showInfo();
 }
 
@@ -480,8 +475,8 @@ void loop() {
     auth = false;
     lcd.setCursor(15, 3);
     Wire.requestFrom(AUTH_ADDR, AUTH_SIZE);
-    char newUser[AUTH_SIZE] = {0};
     if (Wire.available() == AUTH_SIZE) {
+      char newUser[AUTH_SIZE] = {0};
       for (int i = 0; i < AUTH_SIZE; i++) {
         newUser[i] = Wire.read();
       }
@@ -491,13 +486,13 @@ void loop() {
           lcd.clear();
           lcd.write (7);
           lcd.setCursor(2, 0);
-          lcd.print("Hallo Lokführer*in");
+          lcd.print(F("Hallo Lokführer*in"));
           lcd.setCursor(2, 1);
           lcd.print(newUser);
           memcpy(user, newUser, 16);
         }
       } else {
-        memcpy(user, "-unangemeldet- ", 16);
+        memcpy(user, F("-unangemeldet- "), 16);
       }
     } else {
       lcd.print("-");
@@ -520,7 +515,7 @@ void loop() {
               tastenkonfiguration[i].updateReceived = false;
               tastenkonfiguration[i].lastUpdate = xtime;
               lcdSwitchInfo(key.swType, key.adresse);
-              lcd.print("  (i)");
+              lcd.print(F("  (i)"));
               if (key.weichenlage == GERADE) {
                 XpressNet.setTrntPos(0, key.adresse - 1, B10);
               } else {
@@ -533,19 +528,19 @@ void loop() {
               lcd.clear();
               lcd.write(6);
               lcd.setCursor(2, 0);
-              lcd.print("nicht angemeldet");
+              lcd.print(F("nicht angemeldet"));
             }
           }
           if (key.befehl == STOP) {
             lcd.clear();
-            lcd.print("     S T O P");
+            lcd.print(F("     S T O P"));
             lcd.setCursor(0,3);
-            lcd.print("Stoppe Züge");
+            lcd.print(F("Stoppe Züge"));
             XpressNet.setHalt();
             delay(2000);
             XpressNet.setPower(csTrackVoltageOff);
             lcd.setCursor(0,3);
-            lcd.print("Gleisspannung aus");
+            lcd.print(F("Gleisspannung aus"));
           }
         }
       }
@@ -553,11 +548,11 @@ void loop() {
       // check if stop is released
       if (key.befehl == STOP && key.pressed) {
         lcd.clear();
-        lcd.print("Weiterfahrt in");
+        lcd.print(F("Weiterfahrt in"));
         for (byte s = 10; s > 0; s--) {
           lcd.setCursor(8, 2);
           lcd.print(s, DEC);
-          lcd.print("s ");
+          lcd.print(F("s "));
           delay(1000);
         }
         XpressNet.setPower(csNormal);

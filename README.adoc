@@ -2,7 +2,7 @@
 
 
 [.text-center]
-image::zbahn-logo.png[Logo, 100, 50]
+image::zbahn-logo.png[Logo, 100, 70]
 
 _English summary_
 
@@ -10,7 +10,7 @@ This is a small Arduino based application to operate switches on a XpressNet bas
 
 ## Einführung
 
-Dies ist eine Arduino Software, um Weichen an einer XpressNet basierten Zentrale (z.B. MD Xion oder Z21) zu steuern. So kann durch den Einsatz zweier einfacher Platinen ein Stellpult gebaut werden. Mehr Informationen zum Projekt finden sich unter link:http://www.zbahn.de[Zbahn.de].
+Dies ist eine Arduino Software, um Weichen an einer XpressNet basierten Zentrale (z.B. MD Xion oder Z21) zu steuern. So kann durch den Einsatz zweier einfacher Platinen ein Stellpult gebaut werden. Mehr Informationen zum Projekt finden sich unter link:http://www.zbahn.de[Zbahn.de]. Das Projekt lehnt sich an das Stellpult von link:https://www.schulze-modellbau.de/2021/05/27/stellpult-fuer-xpressnet/[Schulze Modellbau] an. Einige Funktionen wurden von dort übernommen, teilweise aber angepasst.
 
 ## Konfiguration
 

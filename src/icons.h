@@ -1,4 +1,4 @@
-uint8_t train_0_0[] = {
+const uint8_t train_0_0[] PROGMEM = {
   0x0F,
   0x1F,
   0x18,
@@ -9,7 +9,7 @@ uint8_t train_0_0[] = {
   0x1F
 };
 
-uint8_t train_1_0[] = {
+const uint8_t train_1_0[] PROGMEM = {
   0x1E,
   0x1F,
   0x03,
@@ -20,7 +20,7 @@ uint8_t train_1_0[] = {
   0x1F
 };
 
-uint8_t train_0_1[] = {
+const uint8_t train_0_1[] PROGMEM = {
   0x1E,
   0x1E,
   0x0F,
@@ -31,7 +31,7 @@ uint8_t train_0_1[] = {
   0x00
 };
 
-uint8_t train_1_1[] = {
+const uint8_t train_1_1[] PROGMEM = {
   0x0F,
   0x0F,
   0x1E,
@@ -42,7 +42,7 @@ uint8_t train_1_1[] = {
   0x00
 };
 
-uint8_t light_on[] = {
+const uint8_t light_on[] PROGMEM = {
   0x06,
   0x0F,
   0x0F,
@@ -53,7 +53,7 @@ uint8_t light_on[] = {
   0x06
 };
 
-uint8_t switch_icon[] = {
+const uint8_t switch_icon[] PROGMEM = {
   0x12,
   0x13,
   0x16,
@@ -64,7 +64,7 @@ uint8_t switch_icon[] = {
   0x12
 };
 
-uint8_t lock_icon[] = {
+const uint8_t lock_icon[] PROGMEM = {
   0x00,
   0x00,
   0x0E,
@@ -75,7 +75,7 @@ uint8_t lock_icon[] = {
   0x1F
 };
 
-uint8_t unlock_icon[] = {
+const uint8_t unlock_icon[] PROGMEM = {
   0x00,
   0x0E,
   0x11,

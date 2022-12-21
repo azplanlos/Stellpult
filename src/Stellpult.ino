@@ -5,6 +5,7 @@
 *****************************************************************************
 */
 
+#include <avr/pgmspace.h>
 #include "XpressNet.h"
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -63,7 +64,7 @@ typedef struct {
   weichenstellung weichenlage;    // aktuelle Weichenlage
   byte ledadresse;                // Adresse der ersten LED (Weiche gerade)
   byte ledadresse2 = 255;
-  long lastUpdate;
+  unsigned int lastUpdate;
   bool recentlySwitched;
   bool updateReceived = true;
   bool blinkState = true;
@@ -88,7 +89,7 @@ long lastKeyPress = millis();
 byte statusLed = 15;
 byte voltageLed = 14;
 
-long lastAuthCheck = 0;
+unsigned long lastAuthCheck = 0;
 bool auth = false;
 char user[AUTH_SIZE] = {0};
 
@@ -110,7 +111,7 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
     }
   }
   if (found) {
-    tastenkonfiguration[num].lastUpdate = millis();
+    tastenkonfiguration[num].lastUpdate = millis() / 1000;
     tastenkonfiguration[num].updateReceived = true;
     if (Pos == B10) {
       if (key.weichenlage != GERADE) {
@@ -298,7 +299,7 @@ bool parseLine(char* str) {
     if (str[0] != 'S') {
       tastenkonfiguration[num - 1].adresse = atoi(str + 2); // zu schaltende Weichenadresse
     }
-    tastenkonfiguration[num - 1].lastUpdate = millis() + (num * 1000);
+    tastenkonfiguration[num - 1].lastUpdate = (millis() + (num * 1000)) / 1000;
   } else if (str[0] == 'L') {
     // LED
     byte led = atoi(str+1);
@@ -412,14 +413,23 @@ void setup() {
   digitalWrite(SwitchLedPin, LOW);
   Wire.begin();
   lcd.init();
-  lcd.createChar((uint8_t) 0, train_0_0);
-  lcd.createChar((uint8_t) 1, train_1_0);
-  lcd.createChar((uint8_t) 2, train_0_1);
-  lcd.createChar((uint8_t) 3, train_1_1);
-  lcd.createChar((uint8_t) 4, light_on);
-  lcd.createChar((uint8_t) 5, switch_icon);
-  lcd.createChar((uint8_t) 6, lock_icon);
-  lcd.createChar((uint8_t) 7, unlock_icon);
+  uint8_t buffer[8] = {0};
+  memcpy_P(buffer, train_0_0, 8);
+  lcd.createChar((uint8_t) 0, buffer);
+  memcpy_P(buffer, train_1_0, 8);
+  lcd.createChar((uint8_t) 1, buffer);
+  memcpy_P(buffer, train_0_1, 8);
+  lcd.createChar((uint8_t) 2, buffer);
+  memcpy_P(buffer, train_1_1, 8);
+  lcd.createChar((uint8_t) 3, buffer);
+  memcpy_P(buffer, light_on, 8);
+  lcd.createChar((uint8_t) 4, buffer);
+  memcpy_P(buffer, switch_icon, 8);
+  lcd.createChar((uint8_t) 5, buffer);
+  memcpy_P(buffer, lock_icon, 8);
+  lcd.createChar((uint8_t) 6, buffer);
+  memcpy_P(buffer, unlock_icon, 8);
+  lcd.createChar((uint8_t) 7, buffer);
   lcd.backlight();
   setupConfig();
   lcd.clear();
@@ -513,7 +523,7 @@ void loop() {
             if (auth) {
               tastenkonfiguration[i].recentlySwitched = true;
               tastenkonfiguration[i].updateReceived = false;
-              tastenkonfiguration[i].lastUpdate = xtime;
+              tastenkonfiguration[i].lastUpdate = xtime / 1000;
               lcdSwitchInfo(key.swType, key.adresse);
               lcd.print(F("  (i)"));
               if (key.weichenlage == GERADE) {
@@ -566,13 +576,13 @@ void loop() {
         switchLed(key.ledadresse, key.ledadresse2, tastenkonfiguration[i].blinkState);
         tastenkonfiguration[i].blinkState = !tastenkonfiguration[i].blinkState;
       }
-      if (key.befehl == UMSCHALTEN && tastenkonfiguration[i].lastUpdate + 2000 <= xtime && !tastenkonfiguration[i].updateReceived) {
+      if (key.befehl == UMSCHALTEN && (tastenkonfiguration[i].lastUpdate * 1000) + 2000 <= xtime && !tastenkonfiguration[i].updateReceived) {
         //lcd.setCursor(2,2);
         //lcd.print("retry ");
         //lcd.print(key.adresse);
         tastenkonfiguration[i].recentlySwitched = true;
         tastenkonfiguration[i].updateReceived = false;
-        tastenkonfiguration[i].lastUpdate = xtime;
+        tastenkonfiguration[i].lastUpdate = xtime / 1000;
         if (key.weichenlage == GERADE) {
           XpressNet.setTrntPos(0, key.adresse - 1, B10);
         } else {
@@ -584,9 +594,9 @@ void loop() {
         XpressNet.getTrntInfo(0, key.adresse - 1);
         updateRequested = true;
       }
-      if (key.befehl == UMSCHALTEN && key.lastUpdate + updateFrequency <= xtime && !updateRequested) {
+      if (key.befehl == UMSCHALTEN && (key.lastUpdate * 1000) + updateFrequency <= xtime && !updateRequested) {
         delay(weichenverzoegerung);
-        tastenkonfiguration[i].lastUpdate = xtime;
+        tastenkonfiguration[i].lastUpdate = xtime / 1000;
         XpressNet.getTrntInfo(0, key.adresse - 1);
         updateRequested = true;
       }

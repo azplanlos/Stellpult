@@ -1,0 +1,3 @@
+[submodule "lib/PCA9555"]
+	path = lib/PCA9555
+	url = https://github.com/nicoverduin/PCA9555.git

@@ -1,0 +1,20 @@
+# Zbahn Stellpult
+
+
+[.text-center]
+image::zbahn-logo.png[Logo, 100, 50]
+
+_English summary_
+
+This is a small Arduino based application to operate switches on a XpressNet based model railway. It should run on Arduino UNO/Mega and needs two separate shields. All PCB files and circuit descriptions are linked below. The project is prepared for use with Platform.io. Please note the licenses of the included submodules as the included XPressNet library is for private use only.
+
+## Einführung
+
+Dies ist eine Arduino Software, um Weichen an einer XpressNet basierten Zentrale (z.B. MD Xion oder Z21) zu steuern. So kann durch den Einsatz zweier einfacher Platinen ein Stellpult gebaut werden. Mehr Informationen zum Projekt finden sich unter link:http://www.zbahn.de[Zbahn.de].
+
+## Konfiguration
+
+Die Konfiguration erfolgt durch eine auf einer SD-Karte abgelegte Konfigurationsdatei mit dem Namen stellpult.conf
+
+## Lizenz
+Diese Software nutzt u.a. die XPressNet Bibliothekt von Philipp Gahtow. Der Einfachheit halber (und weil ich keine dagegen sprechende Aussage in den Lizenzbedingungen hierzu gefunden habe), ist eine aktuelle Version dieser Bibliothek inkludiert. Die Original Website ist link:https://pgahtow.de/w/XpressNet[Digital Modellbahn]. Zu beachten ist, dass diese Bibliothek nur für den __privaten Gebrauch__ eingsetzt werden darf! Dies gilt daher auch für die Software als Ganzes, auch wenn die von mir geschriebenen Teile unter MIT Lizenz auch kommerziell genutzt werden dürfen. Dies bedingt aber u.Uö eine separate Lizenzierung der genutzten Bibliotheken oder ein Ersatz dieser durch Alternativprodukte.

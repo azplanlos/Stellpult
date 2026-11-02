@@ -25,6 +25,7 @@
 
 // Hardware
 #define XNetSRPin            9      // Max485 Busdriver Send/Receive-PIN
+#define LCD_ADDR             0x27   // I2C Adresse Display
 #define keyExpanderAddr      0xA0   // I2C Adresse Keyboard
 #define ledExpanderAddr      0xA1   // I2C Adresse LEDs
 #define SD_CS_PIN            4
@@ -132,7 +133,21 @@ void initKey(tastenkonfiguration_type& key) {
 #endif
 
 XpressNetClass XpressNet;
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+bool hasLcd = false;                // Display an I2C LCD_ADDR gefunden?
+
+// Display, das ohne angeschlossenes LCD alle Zugriffe ignoriert (kein I2C-Verkehr, keine Wartezeiten)
+class OptionalLcd : public LiquidCrystal_I2C {
+public:
+  using LiquidCrystal_I2C::LiquidCrystal_I2C;
+  void init()                          { if (hasLcd) LiquidCrystal_I2C::init(); }
+  void backlight()                     { if (hasLcd) LiquidCrystal_I2C::backlight(); }
+  void clear()                         { if (hasLcd) LiquidCrystal_I2C::clear(); }
+  void setCursor(uint8_t x, uint8_t y) { if (hasLcd) LiquidCrystal_I2C::setCursor(x, y); }
+  void createChar(uint8_t i, uint8_t map[]) { if (hasLcd) LiquidCrystal_I2C::createChar(i, map); }
+  size_t write(uint8_t c) override     { return hasLcd ? LiquidCrystal_I2C::write(c) : 1; }
+};
+
+OptionalLcd lcd(LCD_ADDR, 20, 4);
 PCA9555 keyExpander(keyExpanderAddr, -1);
 PCA9555 ledExpander(ledExpanderAddr, -1);
 
@@ -173,6 +188,16 @@ uint16_t keyPins = 0xFFFF;          // letzter gültiger Zustand der Tasteneing�
 unsigned long lastAuthCheck = 0;
 bool auth = false;
 char user[AUTH_SIZE] = {0};
+bool configLoaded = false;          // Konfiguration vollständig eingelesen?
+bool stopActive = false;            // Nothalt aktiv: alle LEDs blinken
+bool allLedsOn = false;             // Blinkphase für Fehler/Nothalt
+uint8_t xpressNetStatus = 0;
+
+// Vergleich über Überlauf von millis() hinweg. Ist "since" jünger als "now"
+// (veraltetes now nach blockierender Aktion), liefert der Vergleich false.
+static inline bool elapsed(unsigned long now, unsigned long since, unsigned long interval) {
+  return (long)(now - since) >= (long)interval;
+}
 
 //==============================================================
 // LCD-Hilfsfunktionen
@@ -209,10 +234,49 @@ void lcdSwitchInfo(uint8_t type, uint16_t adresse) {
   lcd.print(adresse);
 }
 
-// Zeigt eine Fehlermeldung an und hält das Programm an
+// Bitmaske der konfigurierten LEDs (Bit n = LED-Ausgang n). Solange die Konfiguration
+// nicht (vollständig) geladen ist, werden alle 16 Ausgänge verwendet.
+uint16_t configuredLedMask() {
+  if (!configLoaded) return 0xFFFF;
+  uint16_t mask = 0;
+  if (statusLed < EXPANDER_PINS) mask |= (uint16_t)1 << statusLed;
+  if (voltageLed < EXPANDER_PINS) mask |= (uint16_t)1 << voltageLed;
+  for (byte i = 0; i < cntTastenBelegt; i++) {
+    const tastenkonfiguration_type& key = tastenkonfiguration[i];
+    if (key.ledadresse != 0) mask |= (uint16_t)1 << (key.ledadresse - 1);
+    if (key.ledadresse2 != 0) mask |= (uint16_t)1 << (key.ledadresse2 - 1);
+  }
+  return mask ? mask : 0xFFFF;
+}
+
+void writeLedMask(uint16_t mask, uint8_t level) {
+  for (uint8_t i = 0; i < EXPANDER_PINS; i++) {
+    if (mask & ((uint16_t)1 << i)) ledExpander.digitalWrite(i, level);
+  }
+}
+
+// Lässt alle konfigurierten LEDs im Takt BLINK_INTERVAL blinken (nicht blockierend)
+void blinkAllLeds(unsigned long now) {
+  if (!elapsed(now, lastBlink, BLINK_INTERVAL)) return;
+  lastBlink = now;
+  allLedsOn = !allLedsOn;
+  writeLedMask(configuredLedMask(), allLedsOn ? HIGH : LOW);
+}
+
+// Zeigt eine Fehlermeldung an (falls ein Display vorhanden ist), lässt alle
+// konfigurierten LEDs blinken und hält das Programm an
 void fatalError(const __FlashStringHelper* text, byte row = 0) {
   lcdprint(0, row, text);
-  while (1);
+  ledExpander.begin();   // Fehler kann vor dem LED-Setup auftreten
+  uint16_t mask = configuredLedMask();
+  for (uint8_t i = 0; i < EXPANDER_PINS; i++) {
+    if (mask & ((uint16_t)1 << i)) ledExpander.pinMode(i, OUTPUT);
+  }
+  while (1) {
+    allLedsOn = !allLedsOn;
+    writeLedMask(mask, allLedsOn ? HIGH : LOW);
+    delay(BLINK_INTERVAL);
+  }
 }
 
 void registerLcdIcons() {
@@ -330,6 +394,7 @@ void waitMs(unsigned long ms) {
   unsigned long start = millis();
   while (millis() - start < ms) {
     XpressNet.receive();
+    if (stopActive) blinkAllLeds(millis());
   }
 }
 
@@ -410,6 +475,8 @@ void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
 }
 
 void notifyXNetStatus(uint8_t State) {
+  xpressNetStatus = State;
+  if (stopActive) return;   // LED blinkt gerade; wird nach dem Nothalt wiederhergestellt
   ledExpander.digitalWrite(statusLed, State != 0 ? HIGH : LOW);
 }
 
@@ -420,6 +487,7 @@ void notifyXNetVer(uint8_t V, uint8_t ID) {
 
 void notifyXNetPower(uint8_t State) {
   xpressNetPower = State;
+  if (stopActive) return;
   ledExpander.digitalWrite(voltageLed, State != csNormal ? HIGH : LOW);
 }
 
@@ -583,6 +651,7 @@ void setupConfig() {
     if (!tastenkonfiguration) fatalError(F("Speicher voll!     "));
   }
   readConfig(false);
+  configLoaded = true;
 }
 
 //==============================================================
@@ -615,6 +684,8 @@ void setup() {
 #ifdef WIRE_HAS_TIMEOUT
   Wire.setWireTimeout(I2C_TIMEOUT_US, true);   // hängender I2C-Slave darf die Schleife nicht blockieren
 #endif
+  Wire.beginTransmission(LCD_ADDR);
+  hasLcd = (Wire.endTransmission() == 0);
   lcd.init();
   registerLcdIcons();
   lcd.backlight();
@@ -639,12 +710,6 @@ void setup() {
 //    Nachricht im Puffer; eine neuere überschreibt die ältere (Rückmeldung weg).
 // Wartezeiten werden daher über Zeitstempel bzw. waitMs() gelöst.
 //==============================================================
-
-// Vergleich über Überlauf von millis() hinweg. Ist "since" jünger als "now"
-// (veraltetes now nach blockierender Aktion), liefert der Vergleich false.
-static inline bool elapsed(unsigned long now, unsigned long since, unsigned long interval) {
-  return (long)(now - since) >= (long)interval;
-}
 
 // Wie elapsed(), aber für die 16-Bit-Zeitstempel der Tasten. Interval muss < 32768 ms sein;
 // liegt der Zeitstempel in der Zukunft (z. B. queryAt), ist das Ergebnis false.
@@ -707,6 +772,10 @@ void checkAuthorization(unsigned long now) {
 }
 
 void emergencyStop() {
+  stopActive = true;          // alle konfigurierten LEDs blinken bis zur Weiterfahrt
+  allLedsOn = false;
+  lastBlink = millis() - BLINK_INTERVAL;
+  blinkAllLeds(millis());
   lcd.clear();
   lcd.print(F("     S T O P"));
   lcdprint(0, 3, F("Stoppe Züge"));
@@ -726,6 +795,11 @@ void resumeAfterStop() {
     waitMs(1000);
   }
   XpressNet.setPower(csNormal);
+  stopActive = false;
+  // Blinken beenden und Status-LEDs wiederherstellen; Weichen-LEDs setzt initAnlage()
+  writeLedMask(configuredLedMask(), LOW);
+  ledExpander.digitalWrite(statusLed, xpressNetStatus != 0 ? HIGH : LOW);
+  ledExpander.digitalWrite(voltageLed, xpressNetPower != csNormal ? HIGH : LOW);
   waitMs(weichenverzoegerung);
   initAnlage();
 }
@@ -836,7 +910,11 @@ void loop() {
     serviceKey(tastenkonfiguration[i], now);
   }
   pollTurnouts(now);
-  blinkPendingLeds(now);
+  if (stopActive) {
+    blinkAllLeds(now);       // Taste STOP noch gehalten
+  } else {
+    blinkPendingLeds(now);
+  }
 
   if (elapsed(now, lastKeyPress, INFO_TIMEOUT)) {
     lastKeyPress = now;

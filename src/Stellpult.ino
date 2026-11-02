@@ -25,6 +25,8 @@
 
 // Hardware
 #define XNetSRPin            9      // Max485 Busdriver Send/Receive-PIN
+#define XNET_ADDR_MIN        1      // gültiger Adressbereich für XpressNet-Geräte
+#define XNET_ADDR_MAX        31
 #define LCD_ADDR             0x27   // I2C Adresse Display
 #define keyExpanderAddr      0xA0   // I2C Adresse Keyboard
 #define ledExpanderAddr      0xA1   // I2C Adresse LEDs
@@ -568,7 +570,10 @@ void parseDefaultPosition(char* key, char* value) {
 // Allgemeine Einstellungen (anlage, adresse, offset, ...)
 void parseGlobalSetting(char* key, char* value) {
   if (strstr(key, "anlage") != NULL) strcpy(anlage, value);
-  if (strstr(key, "adresse") != NULL) xpressnetAdresse = atoi(value);
+  if (strstr(key, "adresse") != NULL) {
+    int adr = atoi(value);   // int, damit z. B. 268 nicht auf 12 überläuft
+    xpressnetAdresse = (adr >= XNET_ADDR_MIN && adr <= XNET_ADDR_MAX) ? adr : 0;   // 0 = ungültig, siehe setup()
+  }
   if (strstr(key, "offset") != NULL) offset = atoi(value);
   if (strstr(key, "schaltzeit") != NULL) weichenschaltzeit = atoi(value);
   if (strstr(key, "verzoegerung") != NULL) weichenverzoegerung = atoi(value);
@@ -677,6 +682,10 @@ void setupKeyExpander() {
 }
 
 void setup() {
+  // Als Allererstes den RS485-Treiber auf Empfang schalten, damit der Bus während
+  // des restlichen Setups (SD, Display, ...) nie getrieben wird.
+  pinMode(XNetSRPin, OUTPUT);
+  digitalWrite(XNetSRPin, LOW);
 #if SHOW_BUFFER_STATS
   paintStack();
 #endif
@@ -692,6 +701,10 @@ void setup() {
   setupConfig();
   showWelcome();
   setupLedExpander();
+  // Ungültige Adresse: Bus gar nicht erst starten (XpressNet.start() wird nie aufgerufen, das Gerät sendet nie)
+  if (xpressnetAdresse < XNET_ADDR_MIN || xpressnetAdresse > XNET_ADDR_MAX) {
+    fatalError(F("XNet-Adresse 1-31! "), 1);
+  }
   XpressNet.start(xpressnetAdresse, XNetSRPin);    // Initialisierung XNet-Bus
   waitMs(3000);
   setupKeyExpander();

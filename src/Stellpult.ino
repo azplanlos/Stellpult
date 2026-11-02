@@ -14,369 +14,154 @@
 
 #define SD_FAT_TYPE 1
 #define PREFER_SDFAT_LIBRARY 1
-#define AUTH_SIZE 16
-#define AUTH_ADDR 9
 
 #include <SdFat.h>
 #include <sdios.h>                     // SD-Karte
 #include <SPI.h>                    // SPI-Interface
 
-XpressNetClass XpressNet;
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+//==============================================================
+// Konstanten
+//==============================================================
 
-//--------------------------------------------------------------
-// XpressNet address: must be in range of 1-31; must be unique. Note that some IDs
-// are currently used by default, like 2 for a LH90 or LH100 out of the box, or 30
-// for PC interface devices like the XnTCP.
-byte xpressnetAdresse = 9;
-uint8_t xpressNetVersion = 0;
-uint8_t xpressNetId = 0;
-uint8_t xpressNetPower = csNormal;
-byte offset = 0;
-#define XNetSRPin 9       //Max485 Busdriver Send/Receive-PIN
-#define keyExpanderAddr 0xA0  // I2C Adresse Keyboard
-#define ledExpanderAddr 0xA1
-#define interruptPinKeyboard 2
+// Hardware
+#define XNetSRPin            9      // Max485 Busdriver Send/Receive-PIN
+#define keyExpanderAddr      0xA0   // I2C Adresse Keyboard
+#define ledExpanderAddr      0xA1   // I2C Adresse LEDs
+#define SD_CS_PIN            4
+#define EXPANDER_PINS        16
 
-int weichenschaltzeit = 0;
-int weichenverzoegerung = 0;
-char anlage[16] = "";
-int updateFrequency = 4000;
+// Authentifizierung (I2C-Slave liefert den Benutzernamen)
+#define AUTH_SIZE            16
+#define AUTH_ADDR            9
+#define AUTH_CHECK_INTERVAL  5000   // ms
 
-// Tastaturmatrix Weichentasten:
-#define ANZAHLTASTEN 16
+// Tastaturmatrix Weichentasten
+#define ANZAHLTASTEN         16
 
-byte cntTastenBelegt = 0;          // Anzahl der per SD-Karte belegten Tasten
+// Zeitsteuerung (ms)
+#define BLINK_INTERVAL       500
+#define RETRY_TIMEOUT        2000
+#define INFO_TIMEOUT         10000
+#define STOP_RESUME_SECONDS  10
+#define UPDATE_FREQUENCY     4000
 
-// Weichenstatus:
-#define CMD_ABZWEIG     8         // XpressNet-Befehl für Weiche abzweig
-#define CMD_GERADE      9         // XpressNet-Befehl für Weiche gerade
+// Weichenstatus
+#define CMD_ABZWEIG          8      // XpressNet-Befehl für Weiche abzweig
+#define CMD_GERADE           9      // XpressNet-Befehl für Weiche gerade
+#define NO_LED               255
+
+// Zeichen-Indizes der benutzerdefinierten LCD-Symbole (siehe LCD_ICONS)
+#define ICON_LIGHT           4
+#define ICON_SWITCH          5
+#define ICON_LOCK            6
+#define ICON_UNLOCK          7
+
 enum weichenstellung : byte { UNBEKANNT = 0, GERADE = CMD_GERADE, ABZWEIG = CMD_ABZWEIG };
-enum befehltype : byte { UMSCHALTEN = 0, SCHALTEN = 1, FAHRSTRASSE = 2, KOMMANDO = 3, STOP = 4};
-enum switchType: byte { WEICHE = 0, LICHT = 1 };
+enum befehltype : byte { UMSCHALTEN = 0, SCHALTEN = 1, FAHRSTRASSE = 2, KOMMANDO = 3, STOP = 4 };
+enum switchType : byte { WEICHE = 0, LICHT = 1 };
+
+// Icons in der Reihenfolge ihrer LCD-Zeichenindizes 0..7
+const uint8_t* const LCD_ICONS[] = {
+  train_0_0, train_1_0, train_0_1, train_1_1,
+  light_on, switch_icon, lock_icon, unlock_icon
+};
+
+//==============================================================
+// Datentypen und globaler Zustand
+//==============================================================
 
 typedef struct {
-  bool aktiv;                     // Aktiv?
+  bool aktiv;                         // Aktiv?
   bool pressed = false;
-  befehltype befehl;                  // Befehl: U: Umschalten einer Weiche, S: Schalten einer Weiche, F: Fahrstrasse schalten, K: Kommando ausführen
+  befehltype befehl;                  // U: Umschalten, S: Stop (siehe befehltype)
   uint8_t adresse;                    // zu schaltende Weichenadresse
-  bool invertiert;                // Weiche invertiert schalten?
-  weichenstellung weichenlage;    // aktuelle Weichenlage
-  byte ledadresse;                // Adresse der ersten LED (Weiche gerade)
-  byte ledadresse2 = 255;
-  unsigned int lastUpdate;
+  bool invertiert;                    // Weiche invertiert schalten?
+  weichenstellung weichenlage;        // aktuelle Weichenlage
+  byte ledadresse;                    // Adresse der ersten LED (Weiche gerade)
+  byte ledadresse2 = NO_LED;
+  unsigned int lastUpdate;            // Sekunden
   bool recentlySwitched;
   bool updateReceived = true;
   bool blinkState = true;
   switchType swType = WEICHE;
 } tastenkonfiguration_type;
 
-tastenkonfiguration_type tastenkonfiguration[ANZAHLTASTEN];
-
+XpressNetClass XpressNet;
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 PCA9555 keyExpander(keyExpanderAddr, -1);
 PCA9555 ledExpander(ledExpanderAddr, -1);
 
-long lastBlink = millis();
+tastenkonfiguration_type tastenkonfiguration[ANZAHLTASTEN];
+byte cntTastenBelegt = 0;           // Anzahl der per SD-Karte belegten Tasten
 
-byte SwitchLedPin = 6;  //Signalisiert den Weichenzustand
-
-unsigned long previousMillis = 0;        // will store last time LED was updated
-const long interval = 5000;           // interval at which to blink (milliseconds)
-
-volatile bool keyPressed = false;
-long lastKeyPress = millis();
-
+// Konfiguration (wird aus stellpult.conf gelesen)
+byte xpressnetAdresse = 9;          // 1-31, eindeutig am Bus (2 = LH90/LH100, 30 = PC-Interfaces)
+byte offset = 0;
+int weichenschaltzeit = 0;
+int weichenverzoegerung = 0;
+char anlage[16] = "";
 byte statusLed = 15;
 byte voltageLed = 14;
 
+// XpressNet-Zustand
+uint8_t xpressNetVersion = 0;
+uint8_t xpressNetId = 0;
+uint8_t xpressNetPower = csNormal;
+
+// Laufzeitzustand
+volatile bool keyPressed = false;
+long lastBlink = millis();
+long lastKeyPress = millis();
 unsigned long lastAuthCheck = 0;
 bool auth = false;
 char user[AUTH_SIZE] = {0};
 
-//--------------------------------------------------------------------------------------------
-void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
-  tastenkonfiguration_type key = tastenkonfiguration[0];
-  bool found = false;
-  byte num = 0;
-  for (byte i = 0; i < cntTastenBelegt; i++) {
-    //delay(1000);
-    if (tastenkonfiguration[i].adresse == Adr_Low + 1 && tastenkonfiguration[i].recentlySwitched) {
-      tastenkonfiguration[i].recentlySwitched = false;
-      return;
-    }
-    if (tastenkonfiguration[i].adresse == Adr_Low - 3) {
-      num = i;
-      found = true;
-      key = tastenkonfiguration[i];
-    }
-  }
-  if (found) {
-    tastenkonfiguration[num].lastUpdate = millis() / 1000;
-    tastenkonfiguration[num].updateReceived = true;
-    if (Pos == B10) {
-      if (key.weichenlage != GERADE) {
-        lcdSwitchInfo(key.swType, key.adresse);
-        if (key.swType == WEICHE) {
-          lcd.print(F(" Gerade       |"));
-          switchLed(key.ledadresse, key.ledadresse2, true);
-        } else {
-          lcd.print(F(" an"));
-          switchLed(key.ledadresse, 255, true);
-        }
-        tastenkonfiguration[num].weichenlage = GERADE;
-        
-      }
-    }
-    if (Pos == B01) {
-      if (key.weichenlage != ABZWEIG) {
-        lcdSwitchInfo(key.swType, key.adresse);
-        if (key.swType == WEICHE) {
-          lcd.print(F(" Abzweig      /"));
-          switchLed(key.ledadresse, key.ledadresse2, false);
-        } else {
-          lcd.print(F(" aus"));
-          switchLed(key.ledadresse, 255, false);
-        }
-        tastenkonfiguration[num].weichenlage = ABZWEIG;
-      }
-    }
-  } else {
-    //lcd.clear();
-    //lcd.print("Unbekannte Weiche ");
-    //lcd.print(Adr_High, DEC);
-    //lcd.print(" ");
-    //lcd.print(Adr_Low);
-    //delay(1000);
-  }
+//==============================================================
+// LCD-Hilfsfunktionen
+//==============================================================
+
+// Ausgabe eines Textes bzw. einer Zahl an Position x, y
+void lcdprint(byte x, byte y, const char* text) {
+  lcd.setCursor(x, y);
+  lcd.print(text);
+}
+
+void lcdprint(byte x, byte y, const __FlashStringHelper* text) {
+  lcd.setCursor(x, y);
+  lcd.print(text);
+}
+
+void lcdprint(byte x, byte y, byte number) {
+  lcd.setCursor(x, y);
+  lcd.print(number);
+}
+
+// Löscht das Display und zeigt Symbol (Spalte 0) und Text (Spalte 2) in Zeile 0
+void lcdMessage(byte icon, const __FlashStringHelper* text) {
+  lcd.clear();
+  lcd.write(icon);
+  lcdprint(2, 0, text);
 }
 
 void lcdSwitchInfo(switchType type, byte adresse) {
   lcd.clear();
   lcd.setCursor(0, 0);
-  if (type == LICHT) {
-    lcd.write(4);
-  } else {
-    lcd.write(5);
-  }
-  lcd.setCursor(2, 0);
-  lcd.print(adresse);
+  lcd.write(type == LICHT ? ICON_LIGHT : ICON_SWITCH);
+  lcdprint(2, 0, adresse);
 }
 
-void switchLed(byte ledadresse1, byte ledadresse2, bool state) {
-  ledExpander.digitalWrite(ledadresse1-1, state ? HIGH : LOW);
-  if(ledadresse1 > 6 && ledadresse2 < 255) {
-    ledExpander.digitalWrite(ledadresse2 - 1, state ? LOW : HIGH);
-  }
+// Zeigt eine Fehlermeldung an und hält das Programm an
+void fatalError(const __FlashStringHelper* text, byte row = 0) {
+  lcdprint(0, row, text);
+  while (1);
 }
 
-void initAnlage() {
-  for (byte i = 0; i < cntTastenBelegt; i++) {
-    tastenkonfiguration_type key = tastenkonfiguration[i];
-    if (key.aktiv) {
-      if (key.befehl == UMSCHALTEN) {
-        tastenkonfiguration[i].recentlySwitched = true;
-        if (key.weichenlage == ABZWEIG) {
-          XpressNet.setTrntPos(0, key.adresse - 1, B10);
-          switchLed(key.ledadresse, key.ledadresse2, false);
-        } else {
-          XpressNet.setTrntPos(0, key.adresse - 1, B01);
-          switchLed(key.ledadresse, key.ledadresse2, true);
-        }
-        
-        delay(weichenverzoegerung);
-      }
-    }
+void registerLcdIcons() {
+  uint8_t buffer[8] = {0};
+  for (uint8_t i = 0; i < sizeof(LCD_ICONS) / sizeof(LCD_ICONS[0]); i++) {
+    memcpy_P(buffer, LCD_ICONS[i], 8);
+    lcd.createChar(i, buffer);
   }
-}
-
-void notifyXNetStatus (uint8_t State) {
-  ledExpander.digitalWrite(statusLed, State != 0 ? HIGH : LOW);
-}
-
-void notifyXNetVer(uint8_t V, uint8_t ID ) {
-  xpressNetVersion = V;
-  xpressNetId = ID;
-}
-
-void notifyXNetPower (uint8_t State) {
-  xpressNetPower = State;
-  if (State != csNormal) {
-    ledExpander.digitalWrite(voltageLed, HIGH);
-  } else {
-    ledExpander.digitalWrite(voltageLed, LOW);
-  }
-}
-
-void scanI2C() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Scanning..."));
-  int x = 0;
-  for (x = 0; x <= 256; x++) {
-    Wire.beginTransmission(x);
-    if (Wire.endTransmission() == 0) {
-      lcd.setCursor(0, 1);
-      lcd.print(x, HEX);
-      delay(1000);
-    }
-  }
-  lcd.setCursor(0, 0);
-  lcd.print(F("Scan finished."));
-}
-
-void keyPress() {
-  keyPressed = true;
-}
-
-/************************************************************************
-  Ausgabe eines Textes an Position x, y auf dem LCD
-*************************************************************************/
-void lcdprint(byte _x, byte _y, char* _text) {
-  lcd.setCursor(_x, _y);
-  lcd.print(_text);
-}
-
-/************************************************************************
-  Ausgabe eines Textes an Position x, y auf dem LCD
-*************************************************************************/
-void lcdprint(byte _x, byte _y, String _text) {
-  lcd.setCursor(_x, _y);
-  lcd.print(_text);
-}
-
-bool parseLine(char* str) {
-  char * p = strchr (str, '\n');  // search for new line
-  if (p)     // if found truncate at space
-    *p = 0;
-  p = strchr (str, '\r');  // search for return
-  if (p)     // if found truncate at space
-    *p = 0;
-
-  if (strlen(str) <= 2 || strchr(str, '#') != NULL) return true; // comment
-  //lcd.setCursor(0, 0);
-  //lcd.print(str);
-  //delay(1000);
-
-  // Set strtok start of line.
-  str = strtok(str, "=");
-  if (!str) return false;
-  char gleich[] = "=";
-  if (strstr(str, "anlage") != NULL) {
-    strcpy(anlage, strtok(NULL, gleich));
-  }
-  if (strstr(str, "adresse") != NULL) {
-    xpressnetAdresse = atoi(strtok(NULL, gleich));
-  }
-  if (strstr(str, "offset") != NULL) {
-    offset = atoi(strtok(NULL, gleich));
-  }
-  if (strstr(str, "schaltzeit") != NULL) {
-    weichenschaltzeit = atoi(strtok(NULL, gleich));
-  }
-  if (strstr(str, "verzoegerung") != NULL) {
-    weichenverzoegerung = atoi(strtok(NULL, gleich));
-  }
-  if (str[0] == 'T') {
-    // Taste
-    cntTastenBelegt++;
-    byte num = atoi(str + 1);
-    //lcd.setCursor(0, 1);
-    //lcd.print(num);
-    //lcd.print(str);
-    //delay(2000);
-    tastenkonfiguration[num - 1].aktiv = true;
-    str = strtok(NULL, "=");
-    if (str[0] == '-') {
-      tastenkonfiguration[num - 1].invertiert = true;
-      str++;
-    }
-    if (str[0] == 'U') tastenkonfiguration[num - 1].befehl = UMSCHALTEN;                // Befehl: U: Umschalten einer Weiche, S: Schalten einer Weiche, F: Fahrstrasse schalten, K: Kommando ausführen
-    if (str[0] == 'S') tastenkonfiguration[num - 1].befehl = STOP;
-    if (str[0] == 'I') {
-      tastenkonfiguration[num - 1].befehl = UMSCHALTEN;
-      tastenkonfiguration[num - 1].swType = LICHT;
-    }
-    if (str[0] != 'S') {
-      tastenkonfiguration[num - 1].adresse = atoi(str + 2); // zu schaltende Weichenadresse
-    }
-    tastenkonfiguration[num - 1].lastUpdate = (millis() + (num * 1000)) / 1000;
-  } else if (str[0] == 'L') {
-    // LED
-    byte led = atoi(str+1);
-    char* xswitch = strtok(NULL, gleich);
-    byte adr = 255;
-    bool led2Adr = false;
-    if (xswitch[0] == '-') {
-      adr = atoi(xswitch+1);
-      led2Adr = true;
-    } else if(xswitch[0] == 'V') {
-      voltageLed = led-1;
-    } else if(xswitch[0] == 'S') {
-      statusLed = led-1;
-    } else {
-      adr = atoi(xswitch);
-    }
-    if (adr < 255) {
-      for (int i = 0; i < cntTastenBelegt; i++) {
-        if (tastenkonfiguration[i].adresse == adr) {
-          if (!led2Adr) {
-            tastenkonfiguration[i].ledadresse = led;
-          } else {
-            tastenkonfiguration[i].ledadresse2 = led;
-          }
-        }
-      }
-    }
-  } else if (str[0] == 'D') {
-    byte num = atoi(str + 1);
-    if (strtok(NULL, gleich)[0] == 'G') {
-      tastenkonfiguration[num - 1].weichenlage = GERADE;
-    } else {
-      tastenkonfiguration[num - 1].weichenlage = ABZWEIG;
-    }
-  }
-  return true;
-}
-
-/************************************************************************
-  Einlesen der Konfiguration von der SD-Karte
-*************************************************************************/
-void setupConfig() {
-  lcd.clear();
-  lcdprint(0, 0, F("Lese Konfiguration..."));
-  SdFat32 sd;
-  File32 file;
-  char line[124];
-
-  SPI.begin();
-
-  if (!sd.begin(4, SD_SCK_MHZ(4))) {
-    lcdprint(0, 0, F("Fehler SD.begin    "));
-    //digitalWrite(SwitchLedPin, HIGH);
-    while (1);
-  }
-  // Open the file.
-  if (!file.open("stellpult.conf", FILE_READ)) {
-    lcdprint(0, 0, F("File not found!    "));
-    while (1);
-  }
-  while (file.available()) {
-    int n = file.fgets(line, sizeof(line), "\n");
-    if (n <= 0) {
-      lcdprint(0, 0, F("fgets failed"));
-      while (1);
-    }
-    if (line[n - 1] != '\n' && n == (sizeof(line) - 1)) {
-      lcdprint(0, 0, F("line too long"));
-      while (1);
-    }
-    if (strlen(line) > 3 && !parseLine(line)) {
-      lcdprint(0, 0, F("parseLine failed"));
-      lcdprint(0, 1, line);
-      while (1);
-    }
-  }
-  file.close();
 }
 
 void showInfo() {
@@ -390,223 +175,426 @@ void showInfo() {
   lcdprint(3, 1, user);
   if (xpressNetVersion == 0) {
     lcdprint(0, 2, F("nicht verbunden!"));
+    return;
+  }
+  lcdprint(0, 2, F("XPressNet  V."));
+  lcd.print(xpressNetVersion, DEC);
+  lcd.print(F("."));
+  lcd.print(xpressNetId, DEC);
+  lcdprint(0, 3, F("Status:    "));
+  switch (xpressNetPower) {
+    case csNormal: lcd.print(F("Gleis an")); break;
+    case csTrackVoltageOff: lcd.print(F("Gleis aus")); break;
+    case csEmergencyStop: lcd.print(F("STOP")); break;
+    case csShortCircuit: lcd.print(F("KURZSCHLUSS")); break;
+    case csServiceMode: lcd.print(F("Prog.")); break;
+    default: lcd.print(F("nicht verbunden"));
+  }
+}
+
+//==============================================================
+// LEDs und Weichen
+//==============================================================
+
+void switchLed(byte ledadresse1, byte ledadresse2, bool state) {
+  ledExpander.digitalWrite(ledadresse1 - 1, state ? HIGH : LOW);
+  if (ledadresse1 > 6 && ledadresse2 < NO_LED) {
+    ledExpander.digitalWrite(ledadresse2 - 1, state ? LOW : HIGH);
+  }
+}
+
+void setAllLeds(uint8_t level) {
+  for (uint8_t i = 0; i < EXPANDER_PINS; i++) {
+    ledExpander.pinMode(i, OUTPUT);
+    ledExpander.digitalWrite(i, level);
+  }
+}
+
+// Sendet die Weichenposition (B01/B10) an die Zentrale
+void sendTurnout(const tastenkonfiguration_type& key, uint8_t pos) {
+  XpressNet.setTrntPos(0, key.adresse - 1, pos);
+}
+
+// Schaltet die Weiche in die der aktuellen Lage entgegengesetzte Stellung,
+// wartet die Schaltzeit ab und fragt den neuen Zustand an.
+void toggleTurnout(tastenkonfiguration_type& key) {
+  key.recentlySwitched = true;
+  key.updateReceived = false;
+  key.lastUpdate = millis() / 1000;
+  sendTurnout(key, key.weichenlage == GERADE ? B10 : B01);
+  delay(weichenschaltzeit);
+  XpressNet.getTrntInfo(0, key.adresse - 1);
+}
+
+// Stellt alle Weichen auf den zuletzt bekannten Zustand
+void initAnlage() {
+  for (byte i = 0; i < cntTastenBelegt; i++) {
+    tastenkonfiguration_type& key = tastenkonfiguration[i];
+    if (!key.aktiv || key.befehl != UMSCHALTEN) continue;
+
+    bool abzweig = (key.weichenlage == ABZWEIG);
+    key.recentlySwitched = true;
+    sendTurnout(key, abzweig ? B10 : B01);
+    switchLed(key.ledadresse, key.ledadresse2, !abzweig);
+    delay(weichenverzoegerung);
+  }
+}
+
+//==============================================================
+// XpressNet-Callbacks
+//==============================================================
+
+// Aktualisiert Lage, LED und Display einer Weiche/eines Lichts
+void applyTurnoutPosition(tastenkonfiguration_type& key, weichenstellung lage) {
+  if (key.weichenlage == lage) return;
+
+  bool gerade = (lage == GERADE);
+  lcdSwitchInfo(key.swType, key.adresse);
+  if (key.swType == WEICHE) {
+    lcd.print(gerade ? F(" Gerade       |") : F(" Abzweig      /"));
+    switchLed(key.ledadresse, key.ledadresse2, gerade);
   } else {
-    lcdprint(0, 2, F("XPressNet  V."));
-    lcd.print(xpressNetVersion, DEC);
-    lcd.print(F("."));
-    lcd.print(xpressNetId, DEC);
-    lcdprint(0, 3, F("Status:    "));
-    switch (xpressNetPower) {
-      case csNormal: lcd.print(F("Gleis an")); break;
-      case csTrackVoltageOff: lcd.print(F("Gleis aus")); break;
-      case csEmergencyStop: lcd.print(F("STOP")); break;
-      case csShortCircuit: lcd.print(F("KURZSCHLUSS")); break;
-      case csServiceMode: lcd.print(F("Prog.")); break;
-      default: lcd.print(F("nicht verbunden"));
+    lcd.print(gerade ? F(" an") : F(" aus"));
+    switchLed(key.ledadresse, NO_LED, gerade);
+  }
+  key.weichenlage = lage;
+}
+
+void notifyTrnt(uint8_t Adr_High, uint8_t Adr_Low, uint8_t Pos) {
+  tastenkonfiguration_type* found = NULL;
+  for (byte i = 0; i < cntTastenBelegt; i++) {
+    tastenkonfiguration_type& key = tastenkonfiguration[i];
+    if (key.adresse == Adr_Low + 1 && key.recentlySwitched) {
+      key.recentlySwitched = false;
+      return;
     }
+    if (key.adresse == Adr_Low - 3) {
+      found = &key;
+    }
+  }
+  if (!found) return;
+
+  found->lastUpdate = millis() / 1000;
+  found->updateReceived = true;
+  if (Pos == B10) applyTurnoutPosition(*found, GERADE);
+  if (Pos == B01) applyTurnoutPosition(*found, ABZWEIG);
+}
+
+void notifyXNetStatus(uint8_t State) {
+  ledExpander.digitalWrite(statusLed, State != 0 ? HIGH : LOW);
+}
+
+void notifyXNetVer(uint8_t V, uint8_t ID) {
+  xpressNetVersion = V;
+  xpressNetId = ID;
+}
+
+void notifyXNetPower(uint8_t State) {
+  xpressNetPower = State;
+  ledExpander.digitalWrite(voltageLed, State != csNormal ? HIGH : LOW);
+}
+
+void keyPress() {
+  keyPressed = true;
+}
+
+//==============================================================
+// Konfiguration (stellpult.conf)
+//==============================================================
+
+// Zeile "Tn=[-]X:adresse": Taste n konfigurieren
+void parseKeyConfig(char* key, char* value) {
+  tastenkonfiguration_type& cfg = tastenkonfiguration[atoi(key + 1) - 1];
+  cntTastenBelegt++;
+  cfg.aktiv = true;
+  if (value[0] == '-') {
+    cfg.invertiert = true;
+    value++;
+  }
+  // Befehl: U: Umschalten einer Weiche, S: Stop, I: Licht umschalten
+  if (value[0] == 'U') cfg.befehl = UMSCHALTEN;
+  if (value[0] == 'S') cfg.befehl = STOP;
+  if (value[0] == 'I') {
+    cfg.befehl = UMSCHALTEN;
+    cfg.swType = LICHT;
+  }
+  if (value[0] != 'S') {
+    cfg.adresse = atoi(value + 2);   // zu schaltende Weichenadresse
+  }
+  cfg.lastUpdate = (millis() + (atoi(key + 1) * 1000UL)) / 1000;
+}
+
+// Zeile "Ln=adresse | -adresse | V | S": LED n zuordnen
+void parseLedConfig(char* key, char* value) {
+  byte led = atoi(key + 1);
+  byte adr = NO_LED;
+  bool secondLed = false;
+
+  if (value[0] == '-') {
+    adr = atoi(value + 1);
+    secondLed = true;
+  } else if (value[0] == 'V') {
+    voltageLed = led - 1;
+  } else if (value[0] == 'S') {
+    statusLed = led - 1;
+  } else {
+    adr = atoi(value);
+  }
+
+  if (adr == NO_LED) return;
+  for (byte i = 0; i < cntTastenBelegt; i++) {
+    if (tastenkonfiguration[i].adresse != adr) continue;
+    if (secondLed) {
+      tastenkonfiguration[i].ledadresse2 = led;
+    } else {
+      tastenkonfiguration[i].ledadresse = led;
+    }
+  }
+}
+
+// Zeile "Dn=G|A": Default-Weichenlage von Taste n
+void parseDefaultPosition(char* key, char* value) {
+  tastenkonfiguration[atoi(key + 1) - 1].weichenlage = (value[0] == 'G') ? GERADE : ABZWEIG;
+}
+
+// Allgemeine Einstellungen (anlage, adresse, offset, ...)
+void parseGlobalSetting(char* key, char* value) {
+  if (strstr(key, "anlage") != NULL) strcpy(anlage, value);
+  if (strstr(key, "adresse") != NULL) xpressnetAdresse = atoi(value);
+  if (strstr(key, "offset") != NULL) offset = atoi(value);
+  if (strstr(key, "schaltzeit") != NULL) weichenschaltzeit = atoi(value);
+  if (strstr(key, "verzoegerung") != NULL) weichenverzoegerung = atoi(value);
+}
+
+// Entfernt Zeilenende-Zeichen am Ende der Zeile
+void stripLineEnding(char* str) {
+  char* p = strchr(str, '\n');
+  if (p) *p = 0;
+  p = strchr(str, '\r');
+  if (p) *p = 0;
+}
+
+bool parseLine(char* str) {
+  stripLineEnding(str);
+  if (strlen(str) <= 2 || strchr(str, '#') != NULL) return true;  // Kommentar
+
+  char* key = strtok(str, "=");
+  if (!key) return false;
+  char* value = strtok(NULL, "=");
+  if (!value) return false;
+
+  parseGlobalSetting(key, value);
+  switch (key[0]) {
+    case 'T': parseKeyConfig(key, value); break;
+    case 'L': parseLedConfig(key, value); break;
+    case 'D': parseDefaultPosition(key, value); break;
+  }
+  return true;
+}
+
+// Einlesen der Konfiguration von der SD-Karte
+void setupConfig() {
+  lcd.clear();
+  lcdprint(0, 0, F("Lese Konfiguration..."));
+  SdFat32 sd;
+  File32 file;
+  char line[124];
+
+  SPI.begin();
+
+  if (!sd.begin(SD_CS_PIN, SD_SCK_MHZ(4))) fatalError(F("Fehler SD.begin    "));
+  if (!file.open("stellpult.conf", FILE_READ)) fatalError(F("File not found!    "));
+
+  while (file.available()) {
+    int n = file.fgets(line, sizeof(line), "\n");
+    if (n <= 0) fatalError(F("fgets failed"));
+    if (line[n - 1] != '\n' && n == (sizeof(line) - 1)) fatalError(F("line too long"));
+    if (strlen(line) > 3 && !parseLine(line)) {
+      lcdprint(0, 1, line);
+      fatalError(F("parseLine failed"));
+    }
+  }
+  file.close();
+}
+
+//==============================================================
+// Setup
+//==============================================================
+
+void showWelcome() {
+  lcd.clear();
+  lcdprint(0, 0, F("Willkommen bei der"));
+  lcdprint(0, 1, anlage);
+}
+
+void setupLedExpander() {
+  if (!ledExpander.begin()) fatalError(F("LED board error!"), 3);
+  setAllLeds(HIGH);   // Lampentest
+}
+
+void setupKeyExpander() {
+  if (!keyExpander.begin()) fatalError(F("Keypad error!"), 3);
+  for (uint8_t i = 0; i < EXPANDER_PINS; i++) {
+    keyExpander.pinMode(i, INPUT);
   }
 }
 
 void setup() {
-  // put your setup code here, to run once:
-  pinMode(SwitchLedPin, OUTPUT);
-  digitalWrite(SwitchLedPin, LOW);
   Wire.begin();
   lcd.init();
-  uint8_t buffer[8] = {0};
-  memcpy_P(buffer, train_0_0, 8);
-  lcd.createChar((uint8_t) 0, buffer);
-  memcpy_P(buffer, train_1_0, 8);
-  lcd.createChar((uint8_t) 1, buffer);
-  memcpy_P(buffer, train_0_1, 8);
-  lcd.createChar((uint8_t) 2, buffer);
-  memcpy_P(buffer, train_1_1, 8);
-  lcd.createChar((uint8_t) 3, buffer);
-  memcpy_P(buffer, light_on, 8);
-  lcd.createChar((uint8_t) 4, buffer);
-  memcpy_P(buffer, switch_icon, 8);
-  lcd.createChar((uint8_t) 5, buffer);
-  memcpy_P(buffer, lock_icon, 8);
-  lcd.createChar((uint8_t) 6, buffer);
-  memcpy_P(buffer, unlock_icon, 8);
-  lcd.createChar((uint8_t) 7, buffer);
+  registerLcdIcons();
   lcd.backlight();
   setupConfig();
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(F("Willkommen bei der"));
-  lcd.setCursor(0, 1);
-  lcd.print(anlage);
-  if (!ledExpander.begin()) {
-    lcd.setCursor(0, 3);
-    lcd.print(F("LED board error!"));
-    while(1);
-  }
-  for (uint8_t i = 0; i < 16; i++) {
-    ledExpander.pinMode(i, OUTPUT);
-    ledExpander.digitalWrite(i, HIGH);
-  }
-  XpressNet.start(xpressnetAdresse, XNetSRPin);    //Initialisierung XNet-Bus
+  showWelcome();
+  setupLedExpander();
+  XpressNet.start(xpressnetAdresse, XNetSRPin);    // Initialisierung XNet-Bus
   delay(3000);
-  if (!keyExpander.begin()) {
-    lcd.setCursor(0, 3);
-    lcd.print(F("Keypad error!"));
-    while(1);
-  }
-  for (uint8_t i = 0; i < 16; i++) {
-    keyExpander.pinMode(i, INPUT);
-  }
-  for (uint8_t i = 0; i < 16; i++) {
-    ledExpander.pinMode(i, OUTPUT);
-    ledExpander.digitalWrite(i, LOW);
-  }
+  setupKeyExpander();
+  setAllLeds(LOW);
   initAnlage();
   showInfo();
 }
 
-void loop() {
-  // put your main code here, to run repeatedly:
-  XpressNet.receive();  //permernet update the library
+//==============================================================
+// Hauptschleife
+//==============================================================
 
-  bool updateRequested = false;
-  bool stopped = false;
-
-  long xtime = millis();
-
-  // check for stop
+bool isStopPressed() {
   for (byte i = 0; i < cntTastenBelegt; i++) {
     if (tastenkonfiguration[i].befehl == STOP && tastenkonfiguration[i].pressed) {
-      stopped = true;
+      return true;
     }
   }
+  return false;
+}
 
-  // check for authorization
-  if (lastAuthCheck + 5000 < millis()) {
-    auth = false;
-    lcd.setCursor(15, 3);
-    Wire.requestFrom(AUTH_ADDR, AUTH_SIZE);
-    if (Wire.available() == AUTH_SIZE) {
-      char newUser[AUTH_SIZE] = {0};
-      for (int i = 0; i < AUTH_SIZE; i++) {
-        newUser[i] = Wire.read();
-      }
-      if (newUser[0] != 0) {
-        auth = true;
-        if (strcmp(newUser, user) != 0) {
-          lcd.clear();
-          lcd.write (7);
-          lcd.setCursor(2, 0);
-          lcd.print(F("Hallo Lokführer*in"));
-          lcd.setCursor(2, 1);
-          lcd.print(newUser);
-          memcpy(user, newUser, 16);
-        }
-      } else {
-        memcpy(user, F("-unangemeldet- "), 16);
-      }
-    } else {
-      lcd.print("-");
-    }
-    lastAuthCheck = xtime;
+// Liest den angemeldeten Benutzer vom Auth-Slave. Liefert false bei Kommunikationsfehler.
+bool readAuthUser(char* newUser) {
+  Wire.requestFrom(AUTH_ADDR, AUTH_SIZE);
+  if (Wire.available() != AUTH_SIZE) return false;
+  for (int i = 0; i < AUTH_SIZE; i++) {
+    newUser[i] = Wire.read();
   }
+  return true;
+}
 
-  // check keys
+void checkAuthorization(long now) {
+  if (lastAuthCheck + AUTH_CHECK_INTERVAL >= millis()) return;
+
+  auth = false;
+  lcd.setCursor(15, 3);
+  char newUser[AUTH_SIZE] = {0};
+  if (!readAuthUser(newUser)) {
+    lcd.print("-");
+  } else if (newUser[0] != 0) {
+    auth = true;
+    if (strcmp(newUser, user) != 0) {
+      lcdMessage(ICON_UNLOCK, F("Hallo Lokführer*in"));
+      lcdprint(2, 1, newUser);
+      memcpy(user, newUser, AUTH_SIZE);
+    }
+  } else {
+    memcpy(user, F("-unangemeldet- "), AUTH_SIZE);
+  }
+  lastAuthCheck = now;
+}
+
+void emergencyStop() {
+  lcd.clear();
+  lcd.print(F("     S T O P"));
+  lcdprint(0, 3, F("Stoppe Züge"));
+  XpressNet.setHalt();
+  delay(2000);
+  XpressNet.setPower(csTrackVoltageOff);
+  lcdprint(0, 3, F("Gleisspannung aus"));
+}
+
+void resumeAfterStop() {
+  lcd.clear();
+  lcd.print(F("Weiterfahrt in"));
+  for (byte s = STOP_RESUME_SECONDS; s > 0; s--) {
+    lcd.setCursor(8, 2);
+    lcd.print(s, DEC);
+    lcd.print(F("s "));
+    delay(1000);
+  }
+  XpressNet.setPower(csNormal);
+  delay(weichenverzoegerung);
+  initAnlage();
+}
+
+void handleKeyDown(tastenkonfiguration_type& key, bool stopped, bool& updateRequested) {
+  if (key.pressed) return;
+  lastKeyPress = millis();
+  key.pressed = true;
+  if (stopped) return;
+
+  if (key.befehl == UMSCHALTEN) {
+    if (!auth) {
+      lcdMessage(ICON_LOCK, F("nicht angemeldet"));
+      return;
+    }
+    lcdSwitchInfo(key.swType, key.adresse);
+    lcd.print(F("  (i)"));
+    toggleTurnout(key);
+    updateRequested = true;
+  }
+  if (key.befehl == STOP) {
+    emergencyStop();
+  }
+}
+
+// Lässt die LED einer Weiche blinken, solange keine Rückmeldung eingetroffen ist
+void blinkPendingLed(tastenkonfiguration_type& key, long now) {
+  if (lastBlink + BLINK_INTERVAL > now || key.updateReceived) return;
+  switchLed(key.ledadresse, key.ledadresse2, key.blinkState);
+  key.blinkState = !key.blinkState;
+}
+
+void handleKeyUp(tastenkonfiguration_type& key, long now, bool& updateRequested) {
+  if (key.befehl == STOP && key.pressed) {
+    resumeAfterStop();
+  }
+  key.pressed = false;
+  if (key.befehl != UMSCHALTEN) return;
+
+  blinkPendingLed(key, now);
+
+  if ((key.lastUpdate * 1000) + RETRY_TIMEOUT <= now && !key.updateReceived) {
+    toggleTurnout(key);   // keine Rückmeldung: erneut schalten
+    updateRequested = true;
+  }
+  if ((key.lastUpdate * 1000) + UPDATE_FREQUENCY <= now && !updateRequested) {
+    delay(weichenverzoegerung);
+    key.lastUpdate = now / 1000;
+    XpressNet.getTrntInfo(0, key.adresse - 1);
+    updateRequested = true;
+  }
+}
+
+void loop() {
+  XpressNet.receive();  // Bibliothek permanent bedienen
+
+  bool updateRequested = false;
+  bool stopped = isStopPressed();
+  long now = millis();
+
+  checkAuthorization(now);
+
   for (byte i = 0; i < cntTastenBelegt; i++) {
-    // lese alle Tasten
-    tastenkonfiguration_type key = tastenkonfiguration[i];
+    tastenkonfiguration_type& key = tastenkonfiguration[i];
     if (key.aktiv && keyExpander.digitalRead(i) == LOW) {
-      if (!key.pressed) {
-        lastKeyPress = xtime;
-        tastenkonfiguration[i].pressed = true;
-        if (!stopped) {
-          if (key.befehl == UMSCHALTEN) {
-            if (auth) {
-              tastenkonfiguration[i].recentlySwitched = true;
-              tastenkonfiguration[i].updateReceived = false;
-              tastenkonfiguration[i].lastUpdate = xtime / 1000;
-              lcdSwitchInfo(key.swType, key.adresse);
-              lcd.print(F("  (i)"));
-              if (key.weichenlage == GERADE) {
-                XpressNet.setTrntPos(0, key.adresse - 1, B10);
-              } else {
-                XpressNet.setTrntPos(0, key.adresse - 1, B01);
-              }
-              delay(weichenschaltzeit);
-              XpressNet.getTrntInfo(0, key.adresse - 1);
-              updateRequested = true;
-            } else {
-              lcd.clear();
-              lcd.write(6);
-              lcd.setCursor(2, 0);
-              lcd.print(F("nicht angemeldet"));
-            }
-          }
-          if (key.befehl == STOP) {
-            lcd.clear();
-            lcd.print(F("     S T O P"));
-            lcd.setCursor(0,3);
-            lcd.print(F("Stoppe Züge"));
-            XpressNet.setHalt();
-            delay(2000);
-            XpressNet.setPower(csTrackVoltageOff);
-            lcd.setCursor(0,3);
-            lcd.print(F("Gleisspannung aus"));
-          }
-        }
-      }
+      handleKeyDown(key, stopped, updateRequested);
     } else {
-      // check if stop is released
-      if (key.befehl == STOP && key.pressed) {
-        lcd.clear();
-        lcd.print(F("Weiterfahrt in"));
-        for (byte s = 10; s > 0; s--) {
-          lcd.setCursor(8, 2);
-          lcd.print(s, DEC);
-          lcd.print(F("s "));
-          delay(1000);
-        }
-        XpressNet.setPower(csNormal);
-        delay(weichenverzoegerung);
-        initAnlage();
-      }
-      tastenkonfiguration[i].pressed = false;
-      if (key.befehl == UMSCHALTEN && lastBlink + 500 <= xtime && !tastenkonfiguration[i].updateReceived) {
-        //lcd.setCursor(0,2);
-        //lcd.print(key.blinkState);
-        switchLed(key.ledadresse, key.ledadresse2, tastenkonfiguration[i].blinkState);
-        tastenkonfiguration[i].blinkState = !tastenkonfiguration[i].blinkState;
-      }
-      if (key.befehl == UMSCHALTEN && (tastenkonfiguration[i].lastUpdate * 1000) + 2000 <= xtime && !tastenkonfiguration[i].updateReceived) {
-        //lcd.setCursor(2,2);
-        //lcd.print("retry ");
-        //lcd.print(key.adresse);
-        tastenkonfiguration[i].recentlySwitched = true;
-        tastenkonfiguration[i].updateReceived = false;
-        tastenkonfiguration[i].lastUpdate = xtime / 1000;
-        if (key.weichenlage == GERADE) {
-          XpressNet.setTrntPos(0, key.adresse - 1, B10);
-        } else {
-          XpressNet.setTrntPos(0, key.adresse - 1, B01);
-        }
-        delay(weichenschaltzeit);
-        //lcd.setCursor(2,2);
-        //lcd.print("        ");
-        XpressNet.getTrntInfo(0, key.adresse - 1);
-        updateRequested = true;
-      }
-      if (key.befehl == UMSCHALTEN && (key.lastUpdate * 1000) + updateFrequency <= xtime && !updateRequested) {
-        delay(weichenverzoegerung);
-        tastenkonfiguration[i].lastUpdate = xtime / 1000;
-        XpressNet.getTrntInfo(0, key.adresse - 1);
-        updateRequested = true;
-      }
+      handleKeyUp(key, now, updateRequested);
     }
   }
-  if (lastBlink + 500 <= xtime) {
+
+  if (lastBlink + BLINK_INTERVAL <= now) {
     lastBlink = millis();
   }
-  if (lastKeyPress + 10000 <= xtime) {
-    lastKeyPress = xtime;
+  if (lastKeyPress + INFO_TIMEOUT <= now) {
+    lastKeyPress = now;
     showInfo();
   }
 }

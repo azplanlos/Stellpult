@@ -37,7 +37,7 @@
 
 // Authentifizierung (I2C-Slave liefert den Benutzernamen)
 #define AUTH_SIZE            16
-#define AUTH_ADDR            9
+#define AUTH_ADDR            9      // Standard-I2C-Adresse des RFID-Readers (Konfiguration: rfid=)
 #define AUTH_CHECK_INTERVAL  5000   // ms
 
 // Tastaturmatrix Weichentasten
@@ -189,6 +189,8 @@ byte pollIndex = 0;
 uint16_t keyPins = 0xFFFF;          // letzter gültiger Zustand der Tasteneingänge (LOW = gedrückt)
 unsigned long lastAuthCheck = 0;
 bool auth = false;
+bool authEnabled = true;            // Konfiguration: authentifizierung=ein|aus
+uint8_t authAddr = AUTH_ADDR;       // Konfiguration: rfid=<I2C-Adresse>, dezimal oder 0x..
 char user[AUTH_SIZE] = {0};
 bool configLoaded = false;          // Konfiguration vollständig eingelesen?
 bool stopActive = false;            // Nothalt aktiv: alle LEDs blinken
@@ -577,6 +579,13 @@ void parseGlobalSetting(char* key, char* value) {
   if (strstr(key, "offset") != NULL) offset = atoi(value);
   if (strstr(key, "schaltzeit") != NULL) weichenschaltzeit = atoi(value);
   if (strstr(key, "verzoegerung") != NULL) weichenverzoegerung = atoi(value);
+  if (strstr(key, "authentifizierung") != NULL) {
+    authEnabled = !(strcmp_P(value, PSTR("aus")) == 0 || strcmp_P(value, PSTR("nein")) == 0 || strcmp_P(value, PSTR("0")) == 0);
+  }
+  if (strstr(key, "rfid") != NULL) {
+    long a = strtol(value, NULL, 0);   // dezimal oder 0x-Hex
+    if (a >= 8 && a <= 119) authAddr = (uint8_t)a;   // gültiger 7-Bit-I2C-Bereich, sonst Standard
+  }
 }
 
 // Entfernt Zeilenende-Zeichen am Ende der Zeile
@@ -754,7 +763,7 @@ bool isStopPressed() {
 
 // Liest den angemeldeten Benutzer vom Auth-Slave. Liefert false bei Kommunikationsfehler.
 bool readAuthUser(char* newUser) {
-  Wire.requestFrom((uint8_t)AUTH_ADDR, (uint8_t)AUTH_SIZE);
+  Wire.requestFrom(authAddr, (uint8_t)AUTH_SIZE);
   if (Wire.available() != AUTH_SIZE) return false;
   for (int i = 0; i < AUTH_SIZE; i++) {
     newUser[i] = Wire.read();
@@ -764,6 +773,10 @@ bool readAuthUser(char* newUser) {
 }
 
 void checkAuthorization(unsigned long now) {
+  if (!authEnabled) {
+    auth = true;   // Authentifizierung abgeschaltet: immer berechtigt
+    return;
+  }
   if (!elapsed(now, lastAuthCheck, AUTH_CHECK_INTERVAL)) return;
   lastAuthCheck = now;
 

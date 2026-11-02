@@ -42,6 +42,12 @@ XpressNetClass::XpressNetClass()
 	ReqFktAdr = 0;
 	SlotLast = 0;			
 	ReadData = false;		//keine Serial Daten Speichern
+	rxHead = 0;
+	rxTail = 0;
+	rxHigh = 0;
+	rxOverflow = 0;
+	txHigh = 0;
+	txOverflow = 0;
 }
 
 //******************************************Serial*******************************************
@@ -130,8 +136,11 @@ void XpressNetClass::receive(void)
 	*/
   unsigned long currentMillis = millis();	//aktuelle Zeit setzten
 
-  if (DataReady == true) { 	//Serial Daten dekodieren
-	DataReady = false;
+  byte budget = XRecvMax;	//pro Aufruf hoechstens eine volle Queue abarbeiten
+  bool hadData = false;
+  while (budget > 0 && XNetRxPop()) { 	//Serial Daten dekodieren
+	budget--;
+	hadData = true;
 //	  previousMillis = millis();   // will store last time LED was updated
 	  //Daten, setzte LED = ON!
 	  if (ledState == LOW) {	//LED -> aktivieren!
@@ -179,7 +188,7 @@ void XpressNetClass::receive(void)
 		  else if ((XNetMsg[XNetcom] & 0xF0) == 0x40) {
 				//Rückmeldung
 				byte len = (XNetMsg[XNetcom] & 0x0F) / 2;	//each Adr and Data
-				for (byte i = 1; i <= len; i++) {
+				for (byte i = 1; i <= len && (XNetcom + (i * 2)) <= XNetdata5; i++) {
 					sendSchaltinfo(false, XNetMsg[XNetcom+(i*2)-1] /*Adr*/, XNetMsg[XNetcom+(i*2)]/*Data*/);
 				}
 		  }
@@ -419,7 +428,7 @@ void XpressNetClass::receive(void)
 //	if (ReadData == false)	//Nachricht komplett empfangen, dann hier löschen!
 		XNetclear();	//alte verarbeitete Nachricht löschen
   }		//Daten vorhanden ENDE
-  else {	//keine Daten empfangen, setzte LED = Blink
+  if (!hadData) {	//keine Daten empfangen, setzte LED = Blink
 	  previousMillis++;
 	  if (previousMillis > interval) {			//WARTEN
 		  XNetRun = false;	//Keine Zentrale vorhanden
@@ -969,6 +978,36 @@ void XpressNetClass::XNetclear()
 	XNetMsg[XNetdata5] = 0x00;
 }
 
+//--------------------------------------------------------------------------------------------
+//Empfangs-Queue (Single-Producer ISR / Single-Consumer receive())
+//ISR: Nachricht ablegen. Ist die Queue voll, wird die NEUE Nachricht verworfen (Reihenfolge bleibt erhalten).
+void XpressNetClass::XNetRxPush(const uint8_t *msg)
+{
+	uint8_t head = rxHead;
+	uint8_t next = (head + 1) & (XRecvMax - 1);
+	if (next == rxTail) {
+		if (rxOverflow < 255)
+			rxOverflow++;
+		return;
+	}
+	memcpy(XNetRx[head], msg, 8);
+	rxHead = next;
+	uint8_t used = (next - rxTail) & (XRecvMax - 1);
+	if (used > rxHigh)
+		rxHigh = used;
+}
+
+//receive(): naechste Nachricht aus der Queue nach XNetMsg kopieren. false, wenn Queue leer.
+bool XpressNetClass::XNetRxPop(void)
+{
+	uint8_t tail = rxTail;
+	if (tail == rxHead)
+		return false;
+	memcpy(XNetMsg, XNetRx[tail], 8);
+	rxTail = (tail + 1) & (XRecvMax - 1);
+	return true;
+}
+
 #if defined(__AVR__)
 	//--------------------------------------------------------------------------------------------
 	//Interrupt routine for reading via Serial
@@ -1012,16 +1051,14 @@ void XpressNetClass::XNetget()
 		if (rxdata >= 0x100) {		//Neue Nachricht beginnen
 			ReadData = false;		//keine Speichern der Serial Daten
 			if (XNetMsgTemp[XNetlength] > 1) {
-				//kopieren der Nachricht!
-				XNetMsg[XNetlength] = XNetMsgTemp[XNetlength];
-				XNetMsg[XNetmsg] = XNetMsgTemp[XNetmsg];
-				XNetMsg[XNetcom] = XNetMsgTemp[XNetcom];
-				XNetMsg[XNetdata1] = XNetMsgTemp[XNetdata1];
-				XNetMsg[XNetdata2] = XNetMsgTemp[XNetdata2];
-				XNetMsg[XNetdata3] = XNetMsgTemp[XNetdata3];
-				XNetMsg[XNetdata4] = XNetMsgTemp[XNetdata4];
-				XNetMsg[XNetdata5] = XNetMsgTemp[XNetdata5];
-				DataReady = true;
+#ifdef XNET_RX_IGNORE_LOCO
+				// Telegramme, die diese Anwendung nie auswertet, gar nicht erst einreihen
+				// (Lok-Telegramme 0xEx und Rueckmelder-Broadcasts 0x4x). Sie machen auf einem
+				// belebten Bus den Hauptteil des Verkehrs aus und wuerden die Queue fuellen.
+				uint8_t hdr = XNetMsgTemp[XNetcom] & 0xF0;
+				if (hdr != 0xE0 && !(hdr == 0x40 && XNetMsgTemp[XNetmsg] == 0x60))
+#endif
+				XNetRxPush(XNetMsgTemp);	//komplette Nachricht in die Queue
 			}
 			if (rxdata == myRequestAck) {
 				unsigned char requestAckAck[] = {0x20, 0x20};
@@ -1045,7 +1082,7 @@ void XpressNetClass::XNetget()
 				XNetMsgTemp[XNetlength] = 0; //alte Nachricht löschen
 			}
 		}
-		if (ReadData == true) {   //Data is for our own address
+		if (ReadData == true && XNetMsgTemp[XNetlength] < XNetdata5) {   //Data is for our own address (max. 7 Bytes, Rest wird verworfen)
 			XNetMsgTemp[XNetlength]++;      //Let's make room for it...
 			XNetMsgTemp[XNetMsgTemp[XNetlength]] = rxdata & 0xFF;  //...and store it
 		}
@@ -1066,17 +1103,32 @@ void XpressNetClass::XNetclearSendBuf()		//Buffer leeren
 //--------------------------------------------------------------------------------------------
 boolean XpressNetClass::XNetSendadd(unsigned char *dataString, byte byteCount) 
 {
+	// Der Sendepuffer wird in der RX-ISR (XNetsend()) nach vorne geschoben. Ohne Sperre
+	// kann ein Eintrag waehrend des Schreibens verloren gehen oder zerstoert werden.
+	#if defined(__AVR__)
+	uint8_t sreg = SREG;
+	cli();
+	#endif
+	boolean result = false;	//Kein Platz im Sendbuffer frei!
 	for (byte i = 0; i < XSendMax; i++) {
 		if (XNetSend[i].length == 0) {	//Daten hier Eintragen:
-			XNetSend[i].length = byteCount;	 //Datenlaenge
 			for (byte b = 0; b < byteCount; b++) {
 				XNetSend[i].data[b] = *dataString;
 				dataString++;
 			}
-			return true;	//leeren Platz gefunden -> ENDE
+			XNetSend[i].length = byteCount;	 //Datenlaenge zuletzt setzen
+			if (i + 1 > txHigh)
+				txHigh = i + 1;
+			result = true;	//leeren Platz gefunden -> ENDE
+			break;
 		}
 	}
-	return false;	//Kein Platz im Sendbuffer frei!
+	if (!result && txOverflow < 255)
+		txOverflow++;
+	#if defined(__AVR__)
+	SREG = sreg;
+	#endif
+	return result;
 }
 
 //--------------------------------------------------------------------------------------------

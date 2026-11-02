@@ -109,8 +109,16 @@ typedef struct	//Lokdaten	(Lok Events)
 
 
 /* Slotliste Loks */
-#define XSendMax 16			//Maximalanzahl der Datenpakete im Sendebuffer
-#define SlotMax 15			//Slots für Lokdaten
+#ifndef XSendMax
+#define XSendMax 16			//Maximalanzahl der Datenpakete im Sendebuffer (per -DXSendMax=n aenderbar)
+#endif
+#ifndef XRecvMax
+#define XRecvMax 8			//Nachrichten in der Empfangs-Queue; MUSS Zweierpotenz sein, max. 128 (per -DXRecvMax=n aenderbar)
+#endif
+#ifndef SlotMax
+#define SlotMax 15			//Slots fuer Lokdaten (per -DSlotMax=n aenderbar)
+#endif
+static_assert((XRecvMax & (XRecvMax - 1)) == 0 && XRecvMax >= 2 && XRecvMax <= 128, "XRecvMax muss eine Zweierpotenz zwischen 2 und 128 sein");
 #define SlotInterval 200	//Zeitintervall zur Aktualisierung der Slots (ms)
 #define XSendMaxData 8		//Anzahl Elemente im Datapaket Array XSend
 
@@ -131,7 +139,14 @@ class XpressNetClass
 	#else
 	void start(byte XAdr, uint8_t XControl);  //Initialisierung Serial
 	#endif
-	void receive(void);				//Prüfe ob XNet Packet vorhanden und werte es aus.
+	void receive(void);				//Pruefe ob XNet Packets in der Queue sind und werte sie aus.
+
+	//Diagnose der Puffer (zum Dimensionieren): Hoechststand und Verluste seit Start/resetStats()
+	uint8_t getRxHighWater(void) { return rxHigh; }		//max. gleichzeitig belegte Eintraege der Empfangs-Queue
+	uint8_t getRxOverflow(void) { return rxOverflow; }	//verworfene empfangene Nachrichten (Queue voll), saturiert bei 255
+	uint8_t getTxHighWater(void) { return txHigh; }		//max. gleichzeitig belegte Eintraege des Sendepuffers
+	uint8_t getTxOverflow(void) { return txOverflow; }	//verworfene Sendebefehle (Puffer voll), saturiert bei 255
+	void resetStats(void) { rxHigh = 0; rxOverflow = 0; txHigh = 0; txOverflow = 0; }
 
 	bool setPower(byte Power);		//Zustand Gleisspannung Melden
 	byte getPower();		//Zusand Gleisspannung geben
@@ -169,11 +184,21 @@ class XpressNetClass
 	unsigned int myCallByteInquiry;	// the address we look for for our Call Byte Window
 	unsigned int myRequestAck;		// the address for a request acknowlegement sent
 	uint8_t XNetMsg[8];		//Daten wurden empfangen
-	bool DataReady;				//Daten können verarbeitet werden
+	//Empfangs-Queue: Die ISR (Producer) legt komplette Nachrichten ab, receive() (Consumer) arbeitet sie ab.
+	//rxHead wird nur von der ISR, rxTail nur von receive() geschrieben -> ohne Interrupt-Sperre sicher (8-Bit-Zugriffe).
+	uint8_t XNetRx[XRecvMax][8];
+	volatile uint8_t rxHead;
+	volatile uint8_t rxTail;
+	volatile uint8_t rxHigh;
+	volatile uint8_t rxOverflow;
+	uint8_t txHigh;
+	uint8_t txOverflow;
 	uint8_t XNetMsgTemp[8];		//Serial receive (Length, Message, Command, Data1 to Data5)
 	bool ReadData;				//Empfangene Serial Daten: (Speichern = true/Komplett = false)
 	static XpressNetClass *active_object;	//aktuelle aktive Object 
 	void XNetget(void);			//Empfangene Daten eintragen 
+	void XNetRxPush(const uint8_t *msg);	//ISR: Nachricht in die Queue legen
+	bool XNetRxPop(void);			//Naechste Nachricht nach XNetMsg holen
 	XSend XNetSend[XSendMax];		//Sendbuffer
 	XNetLok xLokSts[SlotMax];		//Speicher für aktive Lokzustände
 
